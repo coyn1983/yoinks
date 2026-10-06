@@ -28,6 +28,18 @@ test('rejects missing, invalid, and unknown options', () => {
   assert.match(parseArgs(['one', 'two']).error ?? '', /single url/)
 })
 
+test('parses spaced and equals-style lang options and rejects bad values', () => {
+  assert.deepEqual(parseArgs(['--lang', 'zh', 'https://example.com/v']), {
+    help: false,
+    version: false,
+    lang: 'zh',
+    initialUrl: 'https://example.com/v',
+  })
+  assert.equal(parseArgs(['--lang=en']).lang, 'en')
+  assert.match(parseArgs(['--lang', 'jp']).error ?? '', /unknown lang/)
+  assert.match(parseArgs(['--lang']).error ?? '', /needs a value/)
+})
+
 test('recognizes only supported modes and cycles through all of them', () => {
   assert.equal(isThemeMode('auto'), true)
   assert.equal(isThemeMode('light'), true)

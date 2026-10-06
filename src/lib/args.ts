@@ -1,3 +1,4 @@
+import {isLang, type Lang} from './i18n.js'
 import {isThemeMode, type ThemeMode} from '../theme.js'
 
 export type CliArgs = {
@@ -5,6 +6,7 @@ export type CliArgs = {
   version: boolean
   initialUrl?: string
   themeMode?: ThemeMode
+  lang?: Lang
   error?: string
 }
 
@@ -27,6 +29,15 @@ export function parseArgs(args: string[]): CliArgs {
       const value = arg.slice('--theme='.length)
       if (!isThemeMode(value)) return {...result, error: `unknown theme “${value}” — use auto, light, or dark`}
       result.themeMode = value
+    } else if (arg === '--lang') {
+      const value = args[++index]
+      if (!value) return {...result, error: '--lang needs a value: en or zh'}
+      if (!isLang(value)) return {...result, error: `unknown lang “${value}” — use en or zh`}
+      result.lang = value
+    } else if (arg.startsWith('--lang=')) {
+      const value = arg.slice('--lang='.length)
+      if (!isLang(value)) return {...result, error: `unknown lang “${value}” — use en or zh`}
+      result.lang = value
     } else if (arg.startsWith('-')) {
       return {...result, error: `unknown option “${arg}”`}
     } else {

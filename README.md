@@ -35,6 +35,7 @@ automatically.
 $ yoinks https://youtu.be/dQw4w9WgXcQ    # straight to the format picker
 $ yoinks                                 # prompts for a url
 $ yoinks --theme light                   # force the light palette
+$ yoinks --lang zh                       # 中文界面 (or --lang en; auto-detects zh_* locales)
 ```
 
 yoinks takes over the terminal (full-screen, centered — and restores your

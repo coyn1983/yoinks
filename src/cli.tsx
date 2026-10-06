@@ -6,32 +6,16 @@ import {captureFrames} from './lib/click-map.js'
 import {parseArgs} from './lib/args.js'
 import {readClipboard} from './lib/clipboard.js'
 import {isProbablyUrl} from './lib/platforms.js'
+import {setLang, t} from './lib/i18n.js'
 
 // read at runtime from the shipped package.json so npm version bumps
 // can't drift from a hardcoded constant
 const VERSION: string = createRequire(import.meta.url)('../package.json').version
 
-const HELP = `
-  yoinks — yoink any video. paste. yoink. done.
-
-  Usage
-    $ yoinks [url]
-
-  Examples
-    $ yoinks https://youtu.be/dQw4w9WgXcQ
-    $ yoinks https://x.com/user/status/123456
-    $ yoinks                 (prompts for a url)
-
-  Options
-    --theme <mode>  use auto, light, or dark for this run
-    -h, --help      show this help
-    -v, --version   show version
-
-  Downloads are saved to ~/Downloads.
-  Powered by yt-dlp — YouTube, X, Instagram, Threads, TikTok & 1800+ sites.
-`
-
 const args = parseArgs(process.argv.slice(2))
+
+// language must be set before any t() call, help text included
+if (args.lang) setLang(args.lang)
 
 if (args.error) {
   console.error(`yoinks: ${args.error}\nTry “yoinks --help” for usage.`)
@@ -39,7 +23,7 @@ if (args.error) {
 }
 
 if (args.help) {
-  console.log(HELP)
+  console.log(t('help'))
   process.exit(0)
 }
 
@@ -95,5 +79,5 @@ await waitUntilExit()
 
 if (isTTY) leaveAltScreen()
 if (outcome.filepath) {
-  console.log(`✓ yoinked → ${outcome.filepath}`)
+  console.log(t('finalOutput', outcome.filepath))
 }
