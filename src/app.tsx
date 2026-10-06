@@ -29,7 +29,8 @@ import {
   type VideoInfo,
 } from './lib/ytdlp.js'
 
-const OUT_DIR = path.join(os.homedir(), 'Downloads')
+// ponytail: hardcoded personal download dir — swap for a -o flag if this ever needs to move
+const OUT_DIR = 'E:\\downloads'
 
 const choiceLabel = (choice: DownloadChoice) => `${choice.kind === 'audio' ? '♪ ' : '▶ '}${choice.label}`
 

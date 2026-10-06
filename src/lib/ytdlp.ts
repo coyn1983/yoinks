@@ -1,5 +1,5 @@
 import {spawn, type ChildProcess} from 'node:child_process'
-import {createWriteStream} from 'node:fs'
+import {createWriteStream, existsSync} from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -104,9 +104,42 @@ export type ProbeResult = {
   infoJsonPath: string
 }
 
+// youtube bot-check workaround: youtube wants cookies ("confirm you're not a
+// bot") — pass a cookies.txt exported from the browser for youtube urls only,
+// so a missing/expired file can never break other sites.
+// edge 127+ app-bound cookie encryption broke --cookies-from-browser (DPAPI
+// error, yt-dlp#10927), hence the exported-file route.
+// youtube needs a JS runtime to solve its n-challenge (node is enabled
+// explicitly because deno is the only default); node is required on PATH.
+// the remote solver lib is cached in ~/.cache/yt-dlp after first fetch
+const JS_RUNTIME_ARGS = [
+  '--js-runtimes',
+  'node',
+  '--remote-components',
+  'ejs:github',
+]
+
+const COOKIES_FILE = 'D:\\Project\\yoinks\\cookies.txt'
+const cookieArgs = (url: string): string[] =>
+  /(?:youtube\.com|youtu\.be)/.test(url) && existsSync(COOKIES_FILE)
+    ? [...JS_RUNTIME_ARGS, '--cookies', COOKIES_FILE]
+    : []
+
+// Sites blocked/unreachable without a local proxy (Clash on 7897).
+// jable.tv: the page loads direct (Cloudflare blocks datacenter proxy IPs!),
+// but its video CDN (mushroomtrack.com) stalls direct — so the webpage is
+// fetched direct while fragments download through the proxy.
+const PROXY_URL = 'http://127.0.0.1:7897'
+const NEEDS_PROXY_ALL = /(?:jable\.tv|mushroomtrack\.com|youtube\.com|youtu\.be|googlevideo\.com|x\.com|twitter\.com|instagram\.com|tiktok\.com)/
+const NEEDS_PROXY_PROBE = /(?:youtube\.com|youtu\.be|googlevideo\.com|x\.com|twitter\.com|instagram\.com|tiktok\.com)/
+const proxyArgs = (url: string): string[] =>
+  NEEDS_PROXY_ALL.test(url) ? ['--proxy', PROXY_URL] : []
+const proxyArgsProbe = (url: string): string[] =>
+  NEEDS_PROXY_PROBE.test(url) ? ['--proxy', PROXY_URL] : []
+
 export async function probe(ytdlp: string, url: string, signal?: AbortSignal): Promise<ProbeResult> {
   const stdout = await new Promise<string>((resolve, reject) => {
-    const child = spawn(ytdlp, ['-J', '--no-playlist', '--no-warnings', url], {signal})
+    const child = spawn(ytdlp, ['-J', '--no-playlist', '--no-warnings', ...proxyArgsProbe(url), ...cookieArgs(url), url], {signal})
     let out = ''
     let stderr = ''
     child.stdout.on('data', chunk => (out += chunk))
@@ -232,6 +265,13 @@ export function download(
   const args = [
     ...(opts.infoJsonPath ? ['--load-info-json', opts.infoJsonPath] : [opts.url]),
     ...opts.choice.args,
+    ...proxyArgs(opts.url),
+    ...cookieArgs(opts.url),
+    // CDN throttles per-connection (~40KB/s); 16 parallel fragments ≈ 1MB/s.
+    // Beyond ~16 the CDN penalizes the IP and throughput drops.
+    '-N', '16',
+    // CDN/GFW resets connections; default 10 fragment retries is not enough
+    '--fragment-retries', '50',
     '--no-playlist',
     '--no-warnings',
     '--newline',
