@@ -126,16 +126,13 @@ const cookieArgs = (url: string): string[] =>
     : []
 
 // Sites blocked/unreachable without a local proxy (Clash on 7897).
-// jable.tv: the page loads direct (Cloudflare blocks datacenter proxy IPs!),
-// but its video CDN (mushroomtrack.com) stalls direct — so the webpage is
-// fetched direct while fragments download through the proxy.
+// jable.tv: direct connections now get 404s from the site's edge (2026-10-07),
+// everything must go through the proxy; impersonate rotation handles Cloudflare.
 const PROXY_URL = 'http://127.0.0.1:7897'
 const NEEDS_PROXY_ALL = /(?:jable\.tv|mushroomtrack\.com|youtube\.com|youtu\.be|googlevideo\.com|x\.com|twitter\.com|instagram\.com|tiktok\.com)/
-const NEEDS_PROXY_PROBE = /(?:youtube\.com|youtu\.be|googlevideo\.com|x\.com|twitter\.com|instagram\.com|tiktok\.com)/
 const proxyArgs = (url: string): string[] =>
   NEEDS_PROXY_ALL.test(url) ? ['--proxy', PROXY_URL] : []
-const proxyArgsProbe = (url: string): string[] =>
-  NEEDS_PROXY_PROBE.test(url) ? ['--proxy', PROXY_URL] : []
+const proxyArgsProbe = proxyArgs
 
 export async function probe(ytdlp: string, url: string, signal?: AbortSignal): Promise<ProbeResult> {
   const stdout = await new Promise<string>((resolve, reject) => {
@@ -244,7 +241,9 @@ export type DownloadHandlers = {
 }
 
 const PROGRESS_PREFIX = 'YOINK|'
-const PROGRESS_TEMPLATE = `${PROGRESS_PREFIX}%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s`
+// fragment_index/fragment_count: with -N concurrent fragments, downloaded_bytes
+// is PER-FRAGMENT and interleaved across fragments, so the UI must sum them.
+const PROGRESS_TEMPLATE = `${PROGRESS_PREFIX}%(progress.fragment_index)s|%(progress.fragment_count)s|%(progress.downloaded_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s`
 
 let activeChild: ChildProcess | undefined
 process.on('exit', () => activeChild?.kill('SIGTERM'))
@@ -293,11 +292,19 @@ export function download(
     const child = spawn(opts.ytdlp, args, {signal})
     activeChild = child
 
+    // TEMP DEBUG: capture raw yt-dlp stdout/stderr to diagnose progress parsing
+    const dbg = path.join(os.tmpdir(), 'yoinks-debug.log')
+    void fs.writeFile(dbg, `=== spawn ${new Date().toISOString()}\n${args.join(' ')}\n`).catch(() => {})
+
     let stderr = ''
     let filepath = ''
     let part = 0
     let totalParts = 1
-    let lastDownloaded = 0
+    // per-fragment progress for -N concurrent downloads; key = fragment index
+    // (direct HTTP downloads have no fragment_index — they land under key 0)
+    const fragmentBytes = new Map<number, number>()
+    let totalBytes: number | undefined
+    let speedBps: number | undefined
     let buffer = ''
     // every file yt-dlp writes this run, so a cancel can clean up after itself
     const destinations: string[] = []
@@ -309,16 +316,25 @@ export function download(
       for (const rawLine of lines) {
         const line = rawLine.trim()
         if (!line) continue
+        void fs.appendFile(dbg, `OUT| ${line}\n`).catch(() => {})
         if (line.startsWith(PROGRESS_PREFIX)) {
-          const [downloaded, total, totalEstimate, speed, eta] = line.slice(PROGRESS_PREFIX.length).split('|')
-          const downloadedBytes = toNumber(downloaded) ?? 0
-          if (downloadedBytes < lastDownloaded) part++
-          lastDownloaded = downloadedBytes
+          const [fragIdx, fragCount, fragBytes, totalEst, spd] = line
+            .slice(PROGRESS_PREFIX.length)
+            .split('|')
+          const index = toNumber(fragIdx) ?? 0
+          if (index === 0 && fragBytes.trim() === 'NA') {
+            // first tick of a non-fragmented download — nothing to add yet
+          } else {
+            fragmentBytes.set(index, toNumber(fragBytes) ?? 0)
+          }
+          totalBytes = toNumber(totalEst) ?? totalBytes
+          speedBps = toNumber(spd) ?? speedBps
+          const downloaded = [...fragmentBytes.values()].reduce((a, b) => a + b, 0)
           handlers.onProgress({
-            downloadedBytes,
-            totalBytes: toNumber(total) ?? toNumber(totalEstimate),
-            speed: toNumber(speed),
-            eta: toNumber(eta),
+            downloadedBytes: downloaded,
+            totalBytes,
+            speed: speedBps,
+            eta: speedBps && totalBytes ? (totalBytes - downloaded) / speedBps : undefined,
             part,
             totalParts,
           })
@@ -333,15 +349,25 @@ export function download(
           handlers.onProcessing()
         } else if (line.startsWith('[download] Destination: ')) {
           destinations.push(line.slice('[download] Destination: '.length))
+          // second Destination = second file (audio after video) — clear per-file state
+          if (destinations.length > 1) {
+            fragmentBytes.clear()
+            totalBytes = undefined
+          }
+          part = destinations.length - 1
         } else if (path.isAbsolute(line)) {
           filepath = line
         }
       }
     })
-    child.stderr.on('data', chunk => (stderr += chunk))
+    child.stderr.on('data', chunk => {
+      stderr += chunk
+      void fs.appendFile(dbg, `ERR| ${chunk.toString()}`).catch(() => {})
+    })
     child.on('error', reject)
     child.on('close', code => {
       activeChild = undefined
+      void fs.appendFile(dbg, `=== close code=${code}\n`).catch(() => {})
       if (signal?.aborted) {
         // cancelled on purpose — don't leave half-written files behind
         void removePartials(destinations)
