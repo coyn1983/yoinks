@@ -241,9 +241,9 @@ export type DownloadHandlers = {
 }
 
 const PROGRESS_PREFIX = 'YOINK|'
-// fragment_index/fragment_count: with -N concurrent fragments, downloaded_bytes
-// is PER-FRAGMENT and interleaved across fragments, so the UI must sum them.
-const PROGRESS_TEMPLATE = `${PROGRESS_PREFIX}%(progress.fragment_index)s|%(progress.fragment_count)s|%(progress.downloaded_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s`
+// NOTE: in fragment (-N) mode downloaded_bytes is the GLOBAL cumulative count,
+// not per-fragment — do not sum it across fragment indices.
+const PROGRESS_TEMPLATE = `${PROGRESS_PREFIX}%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s`
 
 let activeChild: ChildProcess | undefined
 process.on('exit', () => activeChild?.kill('SIGTERM'))
@@ -300,11 +300,7 @@ export function download(
     let filepath = ''
     let part = 0
     let totalParts = 1
-    // per-fragment progress for -N concurrent downloads; key = fragment index
-    // (direct HTTP downloads have no fragment_index — they land under key 0)
-    const fragmentBytes = new Map<number, number>()
-    let totalBytes: number | undefined
-    let speedBps: number | undefined
+    let lastDownloaded = 0
     let buffer = ''
     // every file yt-dlp writes this run, so a cancel can clean up after itself
     const destinations: string[] = []
@@ -318,23 +314,17 @@ export function download(
         if (!line) continue
         void fs.appendFile(dbg, `OUT| ${line}\n`).catch(() => {})
         if (line.startsWith(PROGRESS_PREFIX)) {
-          const [fragIdx, fragCount, fragBytes, totalEst, spd] = line
+          const [downloaded, total, totalEstimate, speed, eta] = line
             .slice(PROGRESS_PREFIX.length)
             .split('|')
-          const index = toNumber(fragIdx) ?? 0
-          if (index === 0 && fragBytes.trim() === 'NA') {
-            // first tick of a non-fragmented download — nothing to add yet
-          } else {
-            fragmentBytes.set(index, toNumber(fragBytes) ?? 0)
-          }
-          totalBytes = toNumber(totalEst) ?? totalBytes
-          speedBps = toNumber(spd) ?? speedBps
-          const downloaded = [...fragmentBytes.values()].reduce((a, b) => a + b, 0)
+          const downloadedBytes = toNumber(downloaded) ?? 0
+          if (downloadedBytes < lastDownloaded) part++
+          lastDownloaded = downloadedBytes
           handlers.onProgress({
-            downloadedBytes: downloaded,
-            totalBytes,
-            speed: speedBps,
-            eta: speedBps && totalBytes ? (totalBytes - downloaded) / speedBps : undefined,
+            downloadedBytes,
+            totalBytes: toNumber(total) ?? toNumber(totalEstimate),
+            speed: toNumber(speed),
+            eta: toNumber(eta),
             part,
             totalParts,
           })
@@ -349,11 +339,6 @@ export function download(
           handlers.onProcessing()
         } else if (line.startsWith('[download] Destination: ')) {
           destinations.push(line.slice('[download] Destination: '.length))
-          // second Destination = second file (audio after video) — clear per-file state
-          if (destinations.length > 1) {
-            fragmentBytes.clear()
-            totalBytes = undefined
-          }
           part = destinations.length - 1
         } else if (path.isAbsolute(line)) {
           filepath = line
